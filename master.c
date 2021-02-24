@@ -1,5 +1,5 @@
 //Author: Caleb Riese
-//Date: 2/21/2021
+//Date: 2/19/2021
 
 #include <stdio.h>
 #include <getopt.h>
@@ -8,12 +8,24 @@
 #include <stdio.h>
 #include <string.h>
 #include <errno.h>
+//void countNonBlankLines(FILE * inputFile, char *myError)
 
-
-void processArgs(int argc, char **argv, char myError[])
+int countNonBlankLines(FILE * inputFile)
 {
-
+    int lineCount = 0;
+    char character;
+    char lastCharacter = '\n';
+    while (character = fgetc(inputFile), character != EOF)
+    {
+        if (character == '\n' && lastCharacter != '\n')
+            lineCount++;
+        lastCharacter = character;
+    }
+    if (lastCharacter != '\n')
+        lineCount++;
+    return lineCount;
 }
+
 
 int main(int argc, char * argv[])
 {
@@ -31,7 +43,7 @@ int main(int argc, char * argv[])
         switch (opt)
         {
             case 'h':
-                printf("Usage: master [-i] [name=value ...] [utility [argument ...]]\n");
+                printf("Usage: master [-h] [-s i] [-t time] datafile\n");
                 return 0;
             case 's':
                 printf("s\n");
@@ -46,35 +58,23 @@ int main(int argc, char * argv[])
                 return 1;
         }
     }
-    printf("blah\n");
-    FILE *fp;
-    int count = 0;  // Line counter (result)
-    char filename[256];
-    char c;  // To store a character read from file
+
+    FILE * inputFile;
+    char filename[128];
     strcpy(filename, argv[1]);
-    fp = fopen(filename, "r");
-
-    // Check if file exists
-    if (fp == NULL)
+    inputFile = fopen(filename, "r");
+    if (inputFile == NULL)
     {
-        printf("Could not open file %s", filename);
-        return 0;
-    } else {
-        count++;
+        errno = ENOENT;
+        perror(myError);
+        return 1;
     }
 
-    while(!feof(fp))
-    {
-        c = fgetc(fp);
-        if(c == '\n')
-        {
-            count++;
-        }
-    }
+    int lineCount = countNonBlankLines(inputFile);
 
-    // Close the file
-    fclose(fp);
-    printf("The file %s has %d lines\n ", filename, count);
-    //processArgs(argc, argv, myError);
+
+
+
+    fclose(inputFile);
     return 0;
 }
