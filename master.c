@@ -13,6 +13,8 @@
 #include <time.h>
 #include <signal.h>
 #include <math.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 
 void sig_handler(int sig)//called for ctrl c and alarm
@@ -134,7 +136,7 @@ int main(int argc, char * argv[])
 
     //Shared Memory Code
     key_t key = ftok("README",1); //CHANGE WHEN ON HOARE
-    printf("parent key:%d\n", key);
+    printf("parent key:%d\n", key); //REMOVE ME AFTER TESTING ON HOARE!!!!!!!
     int shmid = shmget(key,sizeof(integerArray),0666|IPC_CREAT);
     int * sharedMemory = (int*) shmat(shmid, (void*)0, 0);
     for (int i = 0; i < lineCount; i++)
