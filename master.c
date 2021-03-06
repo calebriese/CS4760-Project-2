@@ -1,11 +1,11 @@
 //Author: Caleb Riese
 //Date: 2/19/2021
+
 #define _XOPEN_SOURCE 700
 #include <stdio.h>
 #include <getopt.h>
 #include <ctype.h>
 #include <stdlib.h>
-#include <stdio.h>
 #include <string.h>
 #include <errno.h>
 #include <sys/ipc.h>
@@ -17,11 +17,37 @@
 #include <unistd.h>
 
 
-void sig_handler(int sig)//called for ctrl c and alarm
+int shmidOne;
+int shmidTwo;
+int shmidThree;
+int * sharedIntArray;
+int * sharedPIDArray;
+int * sharedFlagAndTurn;
+time_t startTime;
+struct tm * myTime;
+FILE * outfile;
+
+void sig_handler(int sig)//my signal handler that deletes shared memory and kills children
 {
-    printf("Handler Function\n");
-    //exit()? gets rid of shared memory
-    //Ctrl-c and free up the shared memory, send a kill signal to the child and then terminate itself.
+    printf("Program Terminating...\n");
+    outfile = fopen( "output.log", "a");
+    startTime = time(NULL);
+    myTime = localtime(&startTime);
+    fprintf(outfile, "Time:%d:%d:%d Terminating...\n",myTime->tm_hour,myTime->tm_min,myTime->tm_sec);
+    fclose(outfile);
+    kill(0,SIGTERM);//sends SIGTERM to the all processes with same group id, so all children
+    int status;
+    while (wait(&status) != -1){} //get rid of any leftover zombies
+    shmdt(sharedIntArray);//detach and destroy memory
+    shmdt(sharedPIDArray);
+    shmdt(sharedFlagAndTurn);
+    shmctl(shmidOne, IPC_RMID, NULL);
+    shmctl(shmidTwo, IPC_RMID, NULL);
+    shmctl(shmidThree, IPC_RMID, NULL);
+    _exit(0);
+}
+void ignore_handler(int sig)//ignores the SIGTERM sent to the PGID
+{
 }
 
 int countNonBlankLines(FILE * inputFile) //counts the lines in file that arent blank
@@ -54,21 +80,25 @@ void checkArgument(char * input, char * myError) //checks if parameter is a digi
 
 int main(int argc, char * argv[])
 {
-
-    signal(SIGINT,sig_handler); //Ctrl-C
-    signal(SIGALRM,sig_handler); //alarm()
-    //signal(SIGCHLD,sig_handler); //Child process finishes
+    //sets up signal handlers
+    signal(SIGINT,sig_handler);
+    signal(SIGALRM,sig_handler);
+    signal(SIGTERM,ignore_handler);
 
     int opt;
+    //my custom error message
     char myError[256] = "";
     strcat(myError, argv[0]);
     strcat(myError, ": Error");
+    //default values
     int maxTime = 100;
-    int maxChildren = 20;
+    int maxChildren = 19;
 
+    //handles all arguments/parameters
     if (argc == 1)
     {
-        printf("No Arguments\n");
+        printf("Usage: master [-h] [-s i] [-t time] datafile\n");
+        exit(EXIT_FAILURE);
     }
     while ((opt = getopt (argc, argv, ":hs:t:")) != -1)
     {
@@ -79,7 +109,7 @@ int main(int argc, char * argv[])
                 return 0;
             case 's':
                 checkArgument(optarg,myError);
-                maxChildren = atoi(optarg);
+                maxChildren = atoi(optarg) - 1; //minus the parent process
                 printf("Max Children: %d\n",maxChildren);
                 break;
             case 't':
@@ -94,8 +124,22 @@ int main(int argc, char * argv[])
                 exit(EXIT_FAILURE);
         }
     }
-    alarm(maxTime);
-
+    if (maxChildren > 19)
+    {
+        printf("Max Processes Allowed is 20, set to 20.\n");
+        maxChildren = 19; //Max allowed is 20 processes: 1 Parent + 19 Children
+    }
+    else if (maxChildren <= 0)
+    {
+        printf("At least one child is required, set to 1 child.\n");
+        maxChildren = 1;
+    }
+    else if (maxTime <= 0) // cant set time to 0
+    {
+        printf("Time must be greater than zero, set to default.\n");
+        maxTime = 100;
+    }
+    alarm(maxTime);//sets the timer that sends SIGALARM
 
     //Opens the file
     FILE * inputFile;
@@ -111,14 +155,14 @@ int main(int argc, char * argv[])
     //Parses the file to an integer array and fills in zeros
     int lineCount = countNonBlankLines(inputFile);
     double logOfLines = log2(lineCount);
-    if ((logOfLines - (int)logOfLines) != 0.0)
+    if ((logOfLines - (int)logOfLines) != 0.0)//if its not 2^k then find how many its missing
     {
         lineCount = (int)pow(2,ceil(log2(lineCount)));
     }
     int index = 0;
     int integerArray[lineCount];
     char holder[10] = {};
-    while (fgets(holder, 10, inputFile))
+    while (fgets(holder, 10, inputFile))//get integers from file
     {
         integerArray[index] = atoi(holder);
         index++;
@@ -131,66 +175,104 @@ int main(int argc, char * argv[])
     }
 
 
-
-
-
     //Shared Memory Code
-    key_t key = ftok("README",1); //CHANGE WHEN ON HOARE
-    printf("parent key:%d\n", key); //REMOVE ME AFTER TESTING ON HOARE!!!!!!!
-    int shmid = shmget(key,sizeof(integerArray),0666|IPC_CREAT);
-    int * sharedMemory = (int*) shmat(shmid, (void*)0, 0);
+    key_t keyOne = ftok("README", 1);
+    key_t keyTwo = ftok("Makefile",1);
+    key_t keyThree = ftok("datafile",1);
+
+    shmidOne = shmget(keyOne, sizeof(integerArray), 0666 | IPC_CREAT);//these are rounded up to page size apparently
+    shmidTwo = shmget(keyTwo, sizeof(integerArray)/2, 0666 | IPC_CREAT);
+    shmidThree = shmget(keyThree, sizeof(int)*2, 0666 | IPC_CREAT);
+
+    //i found it easier to read using different shared memory segments than trying to use one
+    //i chose readability over using less code
+    sharedIntArray = (int*) shmat(shmidOne, (void*)0, 0);
+    sharedPIDArray = (int*) shmat(shmidTwo, (void*)0, 0);
+    sharedFlagAndTurn = (int*) shmat(shmidThree, (void*)0, 0);
+
+    //puts the integers into shared memory
     for (int i = 0; i < lineCount; i++)
     {
-        sharedMemory[i] = integerArray[i];
+        sharedIntArray[i] = integerArray[i];
+    }
+    //sets all PID's to idle (flag[n])
+    for (int i = 0; i < ((lineCount/2)); i++)
+    {
+        sharedPIDArray[i] = 0;
     }
 
 
+    //open output.log
+    outfile = fopen( "output.log", "a");
     //Sum Of Integers/Child Processes Code
     int depth = 1;
     int status;
-    while (lineCount > 1)
+    while (lineCount > 1) //while the sum is not found
     {
-        int numberOfProcesses = lineCount/2;
-        for(int i = 0; i < numberOfProcesses; i++)
+        int activeChildren = 0;
+        int childrenInDepth = lineCount / 2;
+        sharedFlagAndTurn[1] = childrenInDepth; //n for flag[n]
+        for(int i = 0; i < childrenInDepth; i++)//create each child and execute
         {
-            pid_t pid = fork();
-            if (pid == -1)//fork() error
+            if (activeChildren < maxChildren)
             {
-                perror(myError);//fork() sets errno itself
-                exit(EXIT_FAILURE);
-            }
-            else if (pid == 0)//Child Process
-            {
-                char iString[64];
-                sprintf(iString, "%d", i);
-                char depthString[64];
-                sprintf(depthString, "%d", depth);
-                char * args[] = {"./BIN_ADDER", iString, depthString, NULL};
-
-                execvp(args[0], args);
-                exit(EXIT_FAILURE);//In case exec fails this keeps the child from continuing, otherwise its ignored
+                activeChildren++; //before fork so parent does it and not child
+                pid_t pid = fork();
+                if (pid == -1)//fork() error
+                {
+                    perror(myError);//fork() sets errno itself
+                    exit(EXIT_FAILURE);
+                }
+                else if (pid == 0)//Child Process
+                {
+                    char iString[64];
+                    char depthString[64];
+                    sprintf(iString, "%d", i);
+                    sprintf(depthString, "%d", depth);
+                    char * args[] = {"./bin_adder", iString, depthString, NULL};
+                    execvp(args[0], args);
+                    exit(EXIT_FAILURE);//In case exec fails this keeps the child from continuing, otherwise its ignored
+                }
+            } else {
+                //if max child is reached wait for one to end
+                pid_t temp;
+                temp = wait(&status);
+                startTime = time(NULL);
+                myTime = localtime(&startTime);
+                fprintf(outfile, "Time:%d:%d:%d Child Terminated PID:%d\n",myTime->tm_hour,myTime->tm_min,myTime->tm_sec,temp);
+                fflush(outfile); //in case program is terminated early
+                activeChildren--;
+                i--;
             }
         }
-        for (int i = 0; i < numberOfProcesses; i++)//Parent waits for all children before next depth starts
+        while (activeChildren > 0)//Parent waits for all children before next depth starts
         {
-            pid_t pid = wait(&status);
-            printf("Process %i finished\n", pid);
-//            1. WIFEXITED(status): child exited normally
-//            • WEXITSTATUS(status): return code when child exits
-//
-//            2. WIFSIGNALED(status): child exited because a signal was not caught
-//            • WTERMSIG(status): gives the number of the terminating signal
-//
-//            3. WIFSTOPPED(status): child is stopped
-//            • WSTOPSIG(status): gives the number of the stop signal
+            pid_t temp;
+            temp = wait(&status);
+            startTime = time(NULL);
+            myTime = localtime(&startTime);
+            fprintf(outfile, "Time:%d:%d:%d Child Terminated PID:%d\n",myTime->tm_hour,myTime->tm_min,myTime->tm_sec,temp);
+            fflush(outfile); //in case program is terminated early
+            activeChildren--;
         }
-
         lineCount = lineCount/2;
         depth++;
     }
 
-    printf("Final Sum: %d\n", sharedMemory[0]);
-    shmdt(sharedMemory);
-    shmctl(shmid,IPC_RMID,NULL); //should only be done by ONE process after all are done
+    //gets time
+    startTime = time(NULL);
+    myTime = localtime(&startTime);
+    //writes final sum and time of completion
+    printf("Final Sum: %d\n", sharedIntArray[0]);
+    fprintf(outfile, "Time:%d:%d:%d  Final Sum: %d\n", myTime->tm_hour, myTime->tm_min, myTime->tm_sec, sharedIntArray[0]);
+
+    //close all files and destroy shared memory
+    fclose(outfile);
+    shmdt(sharedIntArray);
+    shmdt(sharedPIDArray);
+    shmdt(sharedFlagAndTurn);
+    shmctl(shmidOne, IPC_RMID, NULL);
+    shmctl(shmidTwo, IPC_RMID, NULL);
+    shmctl(shmidThree, IPC_RMID, NULL);
     return 0;
 }
